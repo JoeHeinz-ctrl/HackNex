@@ -20,6 +20,7 @@ export const App: React.FC = () => {
   const [isQuerying, setIsQuerying] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [seekToTime, setSeekToTime] = useState<number | null>(null);
+  const [seekRequest, setSeekRequest] = useState<{ time: number; reqId: number } | null>(null);
   const [evidenceRange, setEvidenceRange] = useState<{ start: number; end: number } | null>(null);
   const [isArchModalOpen, setIsArchModalOpen] = useState<boolean>(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
@@ -109,6 +110,7 @@ export const App: React.FC = () => {
           });
           // Smoothly seek to start of evidence
           setSeekToTime(result.evidence_start);
+          setSeekRequest({ time: result.evidence_start, reqId: Date.now() + Math.random() });
         }
       }
     } catch (err) {
@@ -139,6 +141,7 @@ export const App: React.FC = () => {
 
   const handlePlayEvidence = (startSec: number) => {
     setSeekToTime(startSec);
+    setSeekRequest({ time: startSec, reqId: Date.now() + Math.random() });
   };
 
   const currentVideo = videos.find((v) => v.id === selectedVideoId);
@@ -242,6 +245,7 @@ export const App: React.FC = () => {
                   currentTime={currentTime}
                   onTimeUpdate={(t) => setCurrentTime(t)}
                   seekToTime={seekToTime}
+                  seekRequest={seekRequest}
                   selectedTrackId={selectedTrackId}
                   onSelectTrack={(trId) => setSelectedTrackId(trId)}
                   zones={timeline?.zones || []}

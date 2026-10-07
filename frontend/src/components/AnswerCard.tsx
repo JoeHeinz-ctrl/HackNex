@@ -20,10 +20,11 @@ export const AnswerCard: React.FC<AnswerCardProps> = ({ result, onPlayEvidence }
         {result.evidence_start !== undefined && (
           <button
             onClick={() => onPlayEvidence(result.evidence_start!)}
-            className="flex items-center space-x-1 px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 text-white font-medium text-[11px] transition-colors"
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 active:scale-95 text-white font-medium text-xs transition-all shadow-xs"
+            title="Play evidence clip"
           >
             <Play className="w-3 h-3 fill-current" />
-            <span>Play Clip ({result.evidence_start.toFixed(1)}s)</span>
+            <span>{result.evidence_label || 'Play Clip'}</span>
           </button>
         )}
       </div>
@@ -39,18 +40,28 @@ export const AnswerCard: React.FC<AnswerCardProps> = ({ result, onPlayEvidence }
           <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">
             Detected Event Sequence:
           </span>
-          <div className="flex flex-col space-y-1">
+          <div className="flex flex-col space-y-1.5">
             {result.timeline.map((node, i) => (
               <div
                 key={i}
-                onClick={() => node.timestamp_sec !== undefined && onPlayEvidence(node.timestamp_sec)}
-                className="px-2.5 py-1.5 rounded border border-slate-100 hover:border-slate-300 hover:bg-slate-50 text-xs text-slate-700 flex items-center justify-between cursor-pointer transition-colors"
+                onClick={() => {
+                  const targetTime = node.timestamp_sec !== undefined ? node.timestamp_sec : (result.evidence_start || 0);
+                  onPlayEvidence(targetTime);
+                }}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:border-slate-300 hover:bg-slate-50 active:scale-[0.99] text-xs text-slate-800 flex items-center justify-between cursor-pointer transition-all group"
+                title={`Play from timestamp ${node.time}`}
               >
                 <div className="flex items-center space-x-2 truncate">
-                  <span className="font-mono text-[10px] text-slate-400 font-semibold">{node.time}</span>
-                  <span className="truncate">{node.event}</span>
+                  <span className="font-mono text-[10px] text-blue-700 font-semibold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100 flex-shrink-0">
+                    {node.time}
+                  </span>
+                  <span className="truncate font-medium text-slate-700 group-hover:text-slate-900 transition-colors">
+                    {node.event}
+                  </span>
                 </div>
-                <Play className="w-3 h-3 text-slate-400 ml-2 flex-shrink-0" />
+                <div className="flex items-center space-x-1 text-slate-400 group-hover:text-slate-900 text-[11px] font-medium ml-2 flex-shrink-0 transition-colors">
+                  <Play className="w-3 h-3 fill-current" />
+                </div>
               </div>
             ))}
           </div>

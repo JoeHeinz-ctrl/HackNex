@@ -199,8 +199,8 @@ class TemporalQueryEngine:
             entry_time = selected_track["first_seen"]
             tid = selected_track["track_id"]
             lbl = selected_track["class_name"].capitalize()
-            ev_start = max(0.0, entry_time - 1.8)
-            ev_end = min(max_t, entry_time + 2.5)
+            ev_start = max(0.0, entry_time - 0.8)
+            ev_end = min(max_t, entry_time + 3.0)
 
             subj = f"The {ord_display} moving {target_class}" if is_moving_requested else f"The {ord_display} {target_class} to enter the camera frame"
             ans = f"{subj} ({lbl} #{tid}) entered the camera frame at timestamp {format_ts(entry_time)} ({entry_time:.1f}s)."
@@ -230,7 +230,7 @@ class TemporalQueryEngine:
         entry_time = selected_track["first_seen"]
         tid = selected_track["track_id"]
         lbl = selected_track["class_name"].capitalize()
-        ev_start = max(0.0, entry_time - 1.5)
+        ev_start = max(0.0, entry_time - 0.8)
         ev_end = min(max_t, entry_time + 3.0)
 
         ans = f"The {ord_display} {target_class} ({lbl} #{tid}) arrived in camera view at timestamp {format_ts(entry_time)} ({entry_time:.1f}s)."

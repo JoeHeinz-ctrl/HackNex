@@ -100,6 +100,7 @@ def stream_video(video_id: str, request: Request):
             "Content-Length": str(file_size),
             "Accept-Ranges": "bytes",
             "Content-Type": "video/mp4",
+            "Cache-Control": "public, max-age=86400",
         }
         return StreamingResponse(
             stream_file_range(filepath, 0, file_size - 1),
@@ -124,6 +125,7 @@ def stream_video(video_id: str, request: Request):
             "Accept-Ranges": "bytes",
             "Content-Length": str(content_length),
             "Content-Type": "video/mp4",
+            "Cache-Control": "public, max-age=86400",
         }
         return StreamingResponse(
             stream_file_range(filepath, start, end),

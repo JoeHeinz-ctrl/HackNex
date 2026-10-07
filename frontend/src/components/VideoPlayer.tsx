@@ -29,6 +29,7 @@ interface VideoPlayerProps {
   currentTime: number;
   onTimeUpdate: (t: number) => void;
   seekToTime?: number | null;
+  seekRequest?: { time: number; reqId: number } | null;
   selectedTrackId?: number | null;
   onSelectTrack?: (trackId: number | null) => void;
   zones?: ZoneItem[];
@@ -44,6 +45,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   currentTime,
   onTimeUpdate,
   seekToTime,
+  seekRequest,
   selectedTrackId,
   onSelectTrack,
   zones = [],
@@ -84,14 +86,37 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const effectiveDuration = duration > 0 ? duration : 100;
 
-  // Synchronize external seek
+  // Instant trigger for seek & play request (from evidence button or timeline click)
   useEffect(() => {
-    if (seekToTime !== null && seekToTime !== undefined && videoRef.current) {
-      videoRef.current.currentTime = seekToTime;
-      videoRef.current.play().catch(() => {});
-      setIsPlaying(true);
+    if (!seekRequest || !videoRef.current) return;
+    const vid = videoRef.current;
+    const target = Math.max(0, Math.min(effectiveDuration, seekRequest.time));
+
+    vid.currentTime = target;
+    onTimeUpdate(target);
+
+    // Immediate playback trigger
+    const playPromise = vid.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          setIsPlaying(true);
+        })
+        .catch(() => {
+          vid.muted = true;
+          setIsMuted(true);
+          vid.play().then(() => setIsPlaying(true)).catch(() => {});
+        });
     }
-  }, [seekToTime]);
+  }, [seekRequest, effectiveDuration, onTimeUpdate]);
+
+  // Synchronize legacy seekToTime if provided independently
+  useEffect(() => {
+    if (seekToTime !== null && seekToTime !== undefined && videoRef.current && !seekRequest) {
+      videoRef.current.currentTime = seekToTime;
+      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+    }
+  }, [seekToTime, seekRequest]);
 
   useEffect(() => {
     const handleFsChange = () => {
@@ -681,6 +706,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           ref={videoRef}
           src={`/api/videos/${videoId}/stream`}
           className="w-full h-full object-contain"
+          preload="auto"
           onTimeUpdate={handleTimeUpdate}
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
