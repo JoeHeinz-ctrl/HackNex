@@ -86,14 +86,26 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const effectiveDuration = duration > 0 ? duration : 100;
 
+  // Track handlers and IDs to prevent infinite seek re-triggering
+  const lastHandledReqId = useRef<number | null>(null);
+  const lastHandledSeekToTime = useRef<number | null>(null);
+  const onTimeUpdateRef = useRef(onTimeUpdate);
+
+  useEffect(() => {
+    onTimeUpdateRef.current = onTimeUpdate;
+  }, [onTimeUpdate]);
+
   // Instant trigger for seek & play request (from evidence button or timeline click)
   useEffect(() => {
     if (!seekRequest || !videoRef.current) return;
+    if (seekRequest.reqId === lastHandledReqId.current) return;
+    lastHandledReqId.current = seekRequest.reqId;
+
     const vid = videoRef.current;
     const target = Math.max(0, Math.min(effectiveDuration, seekRequest.time));
 
     vid.currentTime = target;
-    onTimeUpdate(target);
+    onTimeUpdateRef.current(target);
 
     // Immediate playback trigger
     const playPromise = vid.play();
@@ -108,11 +120,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           vid.play().then(() => setIsPlaying(true)).catch(() => {});
         });
     }
-  }, [seekRequest, effectiveDuration, onTimeUpdate]);
+  }, [seekRequest?.reqId, effectiveDuration]);
 
   // Synchronize legacy seekToTime if provided independently
   useEffect(() => {
     if (seekToTime !== null && seekToTime !== undefined && videoRef.current && !seekRequest) {
+      if (seekToTime === lastHandledSeekToTime.current) return;
+      lastHandledSeekToTime.current = seekToTime;
       videoRef.current.currentTime = seekToTime;
       videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
     }

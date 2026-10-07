@@ -139,6 +139,10 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleTimeUpdate = React.useCallback((t: number) => {
+    setCurrentTime(t);
+  }, []);
+
   const handlePlayEvidence = (startSec: number) => {
     setSeekToTime(startSec);
     setSeekRequest({ time: startSec, reqId: Date.now() + Math.random() });
@@ -243,7 +247,7 @@ export const App: React.FC = () => {
                   evidenceRange={evidenceRange}
                   events={timeline?.events || []}
                   currentTime={currentTime}
-                  onTimeUpdate={(t) => setCurrentTime(t)}
+                  onTimeUpdate={handleTimeUpdate}
                   seekToTime={seekToTime}
                   seekRequest={seekRequest}
                   selectedTrackId={selectedTrackId}
