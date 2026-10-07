@@ -11,7 +11,10 @@ class TemporalReasoner:
         self.gemini_key = os.getenv("GEMINI_API_KEY")
         if self.gemini_key:
             genai.configure(api_key=self.gemini_key)
-            self.model = genai.GenerativeModel('gemini-flash-latest', generation_config={"response_mime_type": "application/json"})
+            try:
+                self.model = genai.GenerativeModel('gemini-3.5-flash', generation_config={"response_mime_type": "application/json"})
+            except Exception:
+                self.model = genai.GenerativeModel('gemini-3.5-flash-lite', generation_config={"response_mime_type": "application/json"})
         else:
             self.model = None
 
