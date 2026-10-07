@@ -17,7 +17,10 @@ import {
   X,
   MapPin,
   RefreshCw,
-  Check
+  Check,
+  PenTool,
+  Trash2,
+  Plus
 } from 'lucide-react';
 import type { EventItem, ZoneItem, DetectionItem } from '../types';
 
@@ -80,6 +83,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [showZonesPanel, setShowZonesPanel] = useState<boolean>(false);
   const [isDetectingZones, setIsDetectingZones] = useState<boolean>(false);
   const [zonesSuccess, setZonesSuccess] = useState<boolean>(false);
+
+  // Custom Zone Drawing States
+  const [isDrawingZone, setIsDrawingZone] = useState<boolean>(false);
+  const [draftZonePoints, setDraftZonePoints] = useState<[number, number][]>([]);
+  const [draftZoneName, setDraftZoneName] = useState<string>('Custom Zone');
+  const [draftZoneType, setDraftZoneType] = useState<string>('roadway');
+  const [draftZoneColor, setDraftZoneColor] = useState<string>('#3b82f6');
 
   // Track Inspection
   const [inspectedTrack, setInspectedTrack] = useState<DetectionItem | null>(null);
@@ -478,6 +488,42 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       });
     }
 
+    // 1b. Draw Active Custom Draft Zone Being Marked
+    if (isDrawingZone && draftZonePoints.length > 0) {
+      ctx.beginPath();
+      ctx.moveTo(toX(draftZonePoints[0][0]), toY(draftZonePoints[0][1]));
+      for (let i = 1; i < draftZonePoints.length; i++) {
+        ctx.lineTo(toX(draftZonePoints[i][0]), toY(draftZonePoints[i][1]));
+      }
+      if (draftZonePoints.length >= 3) {
+        ctx.closePath();
+        ctx.fillStyle = `${draftZoneColor}30`;
+        ctx.fill();
+      }
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = draftZoneColor;
+      ctx.setLineDash([5, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Point handles
+      draftZonePoints.forEach((pt, pIdx) => {
+        const px = toX(pt[0]);
+        const py = toY(pt[1]);
+        ctx.beginPath();
+        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = draftZoneColor;
+        ctx.stroke();
+
+        ctx.font = '700 9px Inter, sans-serif';
+        ctx.fillStyle = draftZoneColor;
+        ctx.fillText(`${pIdx + 1}`, px + 7, py - 4);
+      });
+    }
+
     // 2. Draw Object Detections
     if (showDetections) {
       const activeDets = getDetectionsAtTime(timeSec);
@@ -536,7 +582,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
       });
     }
-  }, [showZones, showDetections, zones, showTrails, selectedTrackId, getDetectionsAtTime]);
+  }, [showZones, showDetections, zones, showTrails, selectedTrackId, getDetectionsAtTime, isDrawingZone, draftZonePoints, draftZoneColor]);
 
   // RequestAnimationFrame loop for seamless 60 FPS playback
   useEffect(() => {
@@ -564,9 +610,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     };
   }, [isPlaying, displayTime, renderFrameToCanvas]);
 
-  // Canvas click detection for object selection
+  // Canvas click detection for object selection & zone point marking
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!videoRef.current || currentDetections.length === 0) return;
+    if (!videoRef.current) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
@@ -591,6 +637,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       oy = (ch - rh) / 2;
     }
 
+    // Zone marking mode: record polygon vertex
+    if (isDrawingZone) {
+      const nx = Math.max(0, Math.min(1, (clickX - ox) / rw));
+      const ny = Math.max(0, Math.min(1, (clickY - oy) / rh));
+      setDraftZonePoints((prev) => [...prev, [parseFloat(nx.toFixed(4)), parseFloat(ny.toFixed(4))]]);
+      return;
+    }
+
+    if (currentDetections.length === 0) {
+      setInspectedTrack(null);
+      if (onSelectTrack) onSelectTrack(null);
+      return;
+    }
+
     const clicked = currentDetections.find((d) => {
       const [nx1, ny1, nx2, ny2] = d.bbox_norm || [0, 0, 0, 0];
       const bx = ox + nx1 * rw;
@@ -606,6 +666,51 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     } else {
       setInspectedTrack(null);
       if (onSelectTrack) onSelectTrack(null);
+    }
+  };
+
+  // Complete and save custom marked zone
+  const finishDraftZone = async () => {
+    if (draftZonePoints.length < 3) return;
+    const newZone: ZoneItem = {
+      name: draftZoneName.trim() || `Zone ${zones.length + 1}`,
+      zone_type: draftZoneType,
+      color: draftZoneColor,
+      polygon: draftZonePoints
+    };
+
+    const updatedZones = [...zones, newZone];
+    try {
+      const res = await fetch(`/api/videos/${videoId}/zones`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedZones)
+      });
+      if (res.ok) {
+        if (onZonesUpdated) onZonesUpdated(updatedZones);
+      }
+    } catch (err) {
+      console.error('Failed to save custom zone:', err);
+    }
+    setIsDrawingZone(false);
+    setDraftZonePoints([]);
+    setShowZones(true);
+  };
+
+  // Delete an existing zone
+  const handleDeleteZone = async (indexToDelete: number) => {
+    const updatedZones = zones.filter((_, idx) => idx !== indexToDelete);
+    try {
+      const res = await fetch(`/api/videos/${videoId}/zones`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedZones)
+      });
+      if (res.ok) {
+        if (onZonesUpdated) onZonesUpdated(updatedZones);
+      }
+    } catch (err) {
+      console.error('Failed to delete zone:', err);
     }
   };
 
@@ -692,6 +797,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             <span>Zones ({zones.length})</span>
           </button>
 
+          {/* Direct Mark Zone Button */}
+          <button
+            onClick={() => {
+              const nextState = !isDrawingZone;
+              setIsDrawingZone(nextState);
+              if (nextState) {
+                setDraftZonePoints([]);
+                setDraftZoneName(`Zone ${zones.length + 1}`);
+                setShowZones(true);
+                setShowZonesPanel(false);
+              }
+            }}
+            className={`px-2 py-0.5 rounded text-[11px] font-medium flex items-center space-x-1 border transition-colors ${
+              isDrawingZone
+                ? 'bg-amber-600 border-amber-500 text-white shadow-xs'
+                : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+            }`}
+            title="Mark a custom surveillance zone by clicking points on video"
+          >
+            <PenTool className="w-3 h-3" />
+            <span>{isDrawingZone ? 'Cancel Marking' : 'Mark Zone'}</span>
+          </button>
+
           {/* Filter dropdown */}
           <select
             value={classFilter}
@@ -734,8 +862,77 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         <canvas
           ref={canvasRef}
           onClick={handleCanvasClick}
-          className="absolute inset-0 w-full h-full cursor-crosshair z-10"
+          onDoubleClick={() => {
+            if (isDrawingZone && draftZonePoints.length >= 3) {
+              finishDraftZone();
+            }
+          }}
+          className={`absolute inset-0 w-full h-full z-10 ${isDrawingZone ? 'cursor-crosshair' : 'cursor-default'}`}
         />
+
+        {/* Active Zone Marking Floating HUD */}
+        {isDrawingZone && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-slate-900/95 border border-amber-500/80 rounded-xl px-3.5 py-2 text-xs text-white shadow-2xl flex flex-wrap items-center gap-2.5 backdrop-blur-sm max-w-[95%]">
+            <div className="flex items-center gap-1.5 font-medium text-amber-400">
+              <PenTool className="w-3.5 h-3.5" />
+              <span>Click to place points ({draftZonePoints.length})</span>
+            </div>
+
+            <input
+              type="text"
+              value={draftZoneName}
+              onChange={(e) => setDraftZoneName(e.target.value)}
+              placeholder="Zone name"
+              className="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-amber-400 w-28"
+            />
+
+            <select
+              value={draftZoneType}
+              onChange={(e) => setDraftZoneType(e.target.value)}
+              className="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-xs text-slate-200 focus:outline-none focus:border-amber-400"
+            >
+              <option value="roadway">Roadway</option>
+              <option value="walkway">Walkway</option>
+              <option value="perimeter">Perimeter</option>
+              <option value="restricted">Restricted</option>
+            </select>
+
+            <div className="flex items-center gap-1">
+              {['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'].map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setDraftZoneColor(c)}
+                  className={`w-3.5 h-3.5 rounded-full border ${draftZoneColor === c ? 'ring-2 ring-white scale-110' : 'border-transparent'}`}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1 pl-1.5 border-l border-slate-700">
+              <button
+                type="button"
+                onClick={finishDraftZone}
+                disabled={draftZonePoints.length < 3}
+                className="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:hover:bg-amber-600 text-white font-medium text-xs transition-colors flex items-center gap-1"
+                title={draftZonePoints.length < 3 ? 'Place at least 3 points on video' : 'Save zone'}
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Save</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDrawingZone(false);
+                  setDraftZonePoints([]);
+                }}
+                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Inspected Object HUD */}
         {inspectedTrack && (
@@ -769,44 +966,74 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               </button>
             </div>
 
-            <p className="text-[11px] text-slate-400 mb-3">
-              Zones define operational boundaries for pedestrian walkways, vehicle roadways, and secure perimeters.
+            <p className="text-[11px] text-slate-400 mb-2.5">
+              Zones define operational boundaries for pedestrian walkways, vehicle roadways, and security perimeters.
             </p>
 
-            <div className="space-y-2 mb-3 max-h-40 overflow-y-auto pr-1">
-              {zones.map((z, idx) => (
-                <div key={idx} className="p-2 rounded bg-slate-800/80 border border-slate-700/60 flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: z.color || '#3b82f6' }} />
-                    <span className="font-medium text-slate-200 text-[11px]">{z.name}</span>
+            {/* List of Zones with delete buttons */}
+            <div className="space-y-1.5 mb-3 max-h-44 overflow-y-auto pr-1">
+              {zones.length === 0 ? (
+                <div className="text-[11px] text-slate-500 italic p-2 text-center">No zones defined yet.</div>
+              ) : (
+                zones.map((z, idx) => (
+                  <div key={idx} className="p-2 rounded bg-slate-800/80 border border-slate-700/60 flex items-center justify-between group">
+                    <div className="flex items-center space-x-2 truncate">
+                      <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: z.color || '#3b82f6' }} />
+                      <div className="flex flex-col truncate">
+                        <span className="font-medium text-slate-200 text-[11px] truncate">{z.name}</span>
+                        <span className="text-[10px] text-slate-400 font-mono capitalize">{z.zone_type} &bull; {z.polygon?.length || 0} pts</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteZone(idx)}
+                      className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-700/60 transition-colors"
+                      title="Delete this zone"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
-                  <span className="text-[10px] text-slate-400 font-mono capitalize">{z.zone_type}</span>
-                </div>
-              ))}
+                ))
+              )}
             </div>
 
-            <button
-              onClick={handleAutoDetectZones}
-              disabled={isDetectingZones}
-              className="w-full py-2 px-3 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-medium text-xs flex items-center justify-center space-x-2 transition-colors"
-            >
-              {isDetectingZones ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Computing Scene Geometry...</span>
-                </>
-              ) : zonesSuccess ? (
-                <>
-                  <Check className="w-3.5 h-3.5 text-emerald-300" />
-                  <span>Zones Calibrated to Scene Paths!</span>
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Auto-Detect Zones from Scene Paths</span>
-                </>
-              )}
-            </button>
+            <div className="flex flex-col space-y-2">
+              <button
+                onClick={() => {
+                  setIsDrawingZone(true);
+                  setDraftZonePoints([]);
+                  setDraftZoneName(`Zone ${zones.length + 1}`);
+                  setShowZones(true);
+                  setShowZonesPanel(false);
+                }}
+                className="w-full py-1.5 px-3 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs flex items-center justify-center space-x-1.5 transition-colors shadow-sm"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ Draw / Mark Custom Zone</span>
+              </button>
+
+              <button
+                onClick={handleAutoDetectZones}
+                disabled={isDetectingZones}
+                className="w-full py-1.5 px-3 rounded border border-slate-700 hover:bg-slate-800 disabled:opacity-50 text-slate-300 font-medium text-xs flex items-center justify-center space-x-1.5 transition-colors"
+              >
+                {isDetectingZones ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Computing Scene Geometry...</span>
+                  </>
+                ) : zonesSuccess ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-300" />
+                    <span>Zones Calibrated to Scene Paths!</span>
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Auto-Detect from Trajectories</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         )}
 
