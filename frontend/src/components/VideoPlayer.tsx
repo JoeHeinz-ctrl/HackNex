@@ -20,9 +20,121 @@ import {
   Check,
   PenTool,
   Trash2,
-  Plus
+  Plus,
+  Square,
+  MousePointer,
+  Undo2,
+  Copy,
+  Sparkles,
+  Layers,
+  Settings2
 } from 'lucide-react';
 import type { EventItem, ZoneItem, DetectionItem } from '../types';
+
+export interface ZoneTemplate {
+  id: string;
+  name: string;
+  zone_type: string;
+  color: string;
+  description: string;
+  polygon: [number, number][];
+}
+
+export const ZONE_TEMPLATES: ZoneTemplate[] = [
+  {
+    id: 'roadway_corridor',
+    name: 'Roadway Corridor',
+    zone_type: 'roadway',
+    color: '#3b82f6',
+    description: 'Vehicle transit lane (bottom 50%)',
+    polygon: [[0.05, 0.48], [0.95, 0.48], [0.95, 0.95], [0.05, 0.95]]
+  },
+  {
+    id: 'walkway_left',
+    name: 'Left Pedestrian Walkway',
+    zone_type: 'walkway',
+    color: '#10b981',
+    description: 'Left sidewalk corridor (0-35% width)',
+    polygon: [[0.05, 0.15], [0.35, 0.15], [0.35, 0.95], [0.05, 0.95]]
+  },
+  {
+    id: 'walkway_right',
+    name: 'Right Pedestrian Walkway',
+    zone_type: 'walkway',
+    color: '#10b981',
+    description: 'Right sidewalk corridor (65-95% width)',
+    polygon: [[0.65, 0.15], [0.95, 0.15], [0.95, 0.95], [0.65, 0.95]]
+  },
+  {
+    id: 'restricted_center',
+    name: 'Restricted Center Area',
+    zone_type: 'restricted',
+    color: '#ef4444',
+    description: 'Security & unauthorized loitering zone',
+    polygon: [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]
+  },
+  {
+    id: 'entry_portal',
+    name: 'Gate Entry Point',
+    zone_type: 'perimeter',
+    color: '#8b5cf6',
+    description: 'Entry & exit threshold boundary',
+    polygon: [[0.30, 0.65], [0.70, 0.65], [0.70, 0.95], [0.30, 0.95]]
+  },
+  {
+    id: 'full_scene',
+    name: 'Whole Scene Coverage',
+    zone_type: 'perimeter',
+    color: '#06b6d4',
+    description: 'Full camera surveillance area',
+    polygon: [[0.02, 0.02], [0.98, 0.02], [0.98, 0.98], [0.02, 0.98]]
+  }
+];
+
+function hexToRgba(hex: string, alpha: number): string {
+  const cleanHex = (hex || '#3b82f6').replace('#', '');
+  let r = 59, g = 130, b = 246;
+  if (cleanHex.length === 6) {
+    r = parseInt(cleanHex.substring(0, 2), 16) || 59;
+    g = parseInt(cleanHex.substring(2, 4), 16) || 130;
+    b = parseInt(cleanHex.substring(4, 6), 16) || 246;
+  }
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function pointInPolygon(px: number, py: number, polygon: [number, number][]): boolean {
+  if (!polygon || polygon.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
+    const intersect = ((yi > py) !== (yj > py)) &&
+      (px < ((xj - xi) * (py - yi)) / ((yj - yi) || 0.00001) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function findNearVertex(
+  clickX: number,
+  clickY: number,
+  polygon: [number, number][],
+  ox: number,
+  oy: number,
+  rw: number,
+  rh: number,
+  hitRadius = 24
+): number | null {
+  if (!polygon) return null;
+  for (let i = 0; i < polygon.length; i++) {
+    const px = ox + polygon[i][0] * rw;
+    const py = oy + polygon[i][1] * rh;
+    if (Math.hypot(clickX - px, clickY - py) <= hitRadius) {
+      return i;
+    }
+  }
+  return null;
+}
 
 interface VideoPlayerProps {
   videoId: string;
@@ -84,12 +196,39 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [isDetectingZones, setIsDetectingZones] = useState<boolean>(false);
   const [zonesSuccess, setZonesSuccess] = useState<boolean>(false);
 
-  // Custom Zone Drawing States
-  const [isDrawingZone, setIsDrawingZone] = useState<boolean>(false);
-  const [draftZonePoints, setDraftZonePoints] = useState<[number, number][]>([]);
-  const [draftZoneName, setDraftZoneName] = useState<string>('Custom Zone');
-  const [draftZoneType, setDraftZoneType] = useState<string>('roadway');
-  const [draftZoneColor, setDraftZoneColor] = useState<string>('#3b82f6');
+  // Custom Zone Studio States
+  type ZoneToolMode = 'box' | 'polygon' | 'select';
+  const [isStudioOpen, setIsStudioOpen] = useState<boolean>(false);
+  const [zoneToolMode, setZoneToolMode] = useState<ZoneToolMode>('box');
+  const [selectedZoneIdx, setSelectedZoneIdx] = useState<number | null>(null);
+  const [hoveredZoneIdx, setHoveredZoneIdx] = useState<number | null>(null);
+  const [hoveredVertex, setHoveredVertex] = useState<{ zoneIdx: number; vertexIdx: number } | null>(null);
+
+  // Interactive dragging
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [boxDragStart, setBoxDragStart] = useState<[number, number] | null>(null);
+  const [boxDragCurrent, setBoxDragCurrent] = useState<[number, number] | null>(null);
+  const [activeDragVertex, setActiveDragVertex] = useState<{ zoneIdx: number; vertexIdx: number } | null>(null);
+  const [activeDragZone, setActiveDragZone] = useState<{
+    zoneIdx: number;
+    startNorm: [number, number];
+    originalPolygon: [number, number][];
+  } | null>(null);
+
+  // Polygon drawing mode
+  const [draftPolygonPoints, setDraftPolygonPoints] = useState<[number, number][]>([]);
+  const [mouseNormPos, setMouseNormPos] = useState<[number, number] | null>(null);
+  const [isSnappingToStart, setIsSnappingToStart] = useState<boolean>(false);
+
+  // Active Zone Metadata & Configuration
+  const [activeZoneName, setActiveZoneName] = useState<string>('Custom Zone');
+  const [activeZoneType, setActiveZoneType] = useState<string>('roadway');
+  const [activeZoneColor, setActiveZoneColor] = useState<string>('#3b82f6');
+
+  // UI feedback & Menus
+  const [showTemplatesMenu, setShowTemplatesMenu] = useState<boolean>(false);
+  const [zoneToast, setZoneToast] = useState<string | null>(null);
+  const [, setIsSavingZones] = useState<boolean>(false);
 
   // Track Inspection
   const [inspectedTrack, setInspectedTrack] = useState<DetectionItem | null>(null);
@@ -197,41 +336,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   }, []);
 
-  // Keyboard controls
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const activeTag = (document.activeElement?.tagName || '').toLowerCase();
-      if (activeTag === 'input' || activeTag === 'textarea') return;
 
-      if (e.code === 'Space') {
-        e.preventDefault();
-        togglePlay();
-      } else if (e.code === 'ArrowLeft') {
-        e.preventDefault();
-        if (e.shiftKey) stepFrame(-1);
-        else skipSeconds(-5);
-      } else if (e.code === 'ArrowRight') {
-        e.preventDefault();
-        if (e.shiftKey) stepFrame(1);
-        else skipSeconds(5);
-      } else if (e.code === 'KeyM') {
-        e.preventDefault();
-        toggleMute();
-      } else if (e.code === 'KeyF') {
-        e.preventDefault();
-        toggleFullscreen();
-      } else if (e.code === 'KeyL') {
-        e.preventDefault();
-        setIsLoopingEvidence((prev) => !prev);
-      } else if (e.code === 'KeyB') {
-        e.preventDefault();
-        setShowDetections((prev) => !prev);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePlay, skipSeconds, stepFrame, toggleMute, toggleFullscreen]);
 
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
@@ -456,8 +561,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     // 1. Draw Surveillance Zones
     if (showZones && zones.length > 0) {
-      zones.forEach((z) => {
+      zones.forEach((z, idx) => {
         if (!z.polygon || z.polygon.length < 3) return;
+        const isSelected = isStudioOpen && selectedZoneIdx === idx;
+        const isHovered = isStudioOpen && hoveredZoneIdx === idx && !isSelected;
+        const baseColor = z.color || '#3b82f6';
+
         ctx.beginPath();
         ctx.moveTo(toX(z.polygon[0][0]), toY(z.polygon[0][1]));
         for (let i = 1; i < z.polygon.length; i++) {
@@ -465,63 +574,191 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
         ctx.closePath();
 
-        const baseColor = z.color || '#3b82f6';
-        ctx.fillStyle = `${baseColor}15`;
+        // Polygon Fill
+        ctx.fillStyle = hexToRgba(baseColor, isSelected ? 0.32 : isHovered ? 0.22 : 0.12);
         ctx.fill();
 
-        ctx.lineWidth = 1.5;
-        ctx.strokeStyle = `${baseColor}99`;
-        ctx.setLineDash([4, 4]);
+        // Polygon Border
+        ctx.lineWidth = isSelected ? 2.5 : isHovered ? 2.0 : 1.5;
+        ctx.strokeStyle = isSelected ? '#ffffff' : baseColor;
+        if (!isSelected && !isHovered) {
+          ctx.setLineDash([4, 4]);
+        } else {
+          ctx.setLineDash([]);
+        }
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Zone label tag
+        // Draggable Vertex Handles for Selected Zone in Studio
+        if (isSelected) {
+          z.polygon.forEach((pt, vIdx) => {
+            const vx = toX(pt[0]);
+            const vy = toY(pt[1]);
+            const isHandleHovered = (hoveredVertex?.zoneIdx === idx && hoveredVertex?.vertexIdx === vIdx) ||
+                                    (activeDragVertex?.zoneIdx === idx && activeDragVertex?.vertexIdx === vIdx);
+
+            ctx.beginPath();
+            ctx.arc(vx, vy, isHandleHovered ? 7 : 5, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+            ctx.lineWidth = isHandleHovered ? 3 : 2;
+            ctx.strokeStyle = isHandleHovered ? '#f59e0b' : baseColor;
+            ctx.stroke();
+
+            // Pulsing outer halo if hovered
+            if (isHandleHovered) {
+              ctx.beginPath();
+              ctx.arc(vx, vy, 11, 0, Math.PI * 2);
+              ctx.strokeStyle = 'rgba(245, 158, 11, 0.4)';
+              ctx.lineWidth = 2;
+              ctx.stroke();
+            }
+          });
+        }
+
+        // Zone Tag Label
         const firstPt = z.polygon[0];
         const tagX = toX(firstPt[0]);
         const tagY = toY(firstPt[1]) - 4;
-        ctx.font = '500 11px Inter, sans-serif';
-        const textWidth = ctx.measureText(z.name).width;
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-        ctx.fillRect(tagX - 3, tagY - 13, textWidth + 8, 16);
-        ctx.fillStyle = '#f8fafc';
-        ctx.fillText(z.name, tagX + 1, tagY - 1);
+        ctx.font = '600 11px Inter, sans-serif';
+        const labelText = `${z.name} [${z.zone_type}]`;
+        const textWidth = ctx.measureText(labelText).width;
+
+        ctx.fillStyle = isSelected ? 'rgba(15, 23, 42, 0.95)' : 'rgba(15, 23, 42, 0.80)';
+        ctx.fillRect(tagX - 4, tagY - 14, textWidth + 14, 17);
+
+        // Color indicator circle
+        ctx.fillStyle = baseColor;
+        ctx.beginPath();
+        ctx.arc(tagX + 2, tagY - 5.5, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = isSelected ? '#ffffff' : '#f8fafc';
+        ctx.fillText(labelText, tagX + 10, tagY - 2);
       });
     }
 
-    // 1b. Draw Active Custom Draft Zone Being Marked
-    if (isDrawingZone && draftZonePoints.length > 0) {
-      ctx.beginPath();
-      ctx.moveTo(toX(draftZonePoints[0][0]), toY(draftZonePoints[0][1]));
-      for (let i = 1; i < draftZonePoints.length; i++) {
-        ctx.lineTo(toX(draftZonePoints[i][0]), toY(draftZonePoints[i][1]));
-      }
-      if (draftZonePoints.length >= 3) {
-        ctx.closePath();
-        ctx.fillStyle = `${draftZoneColor}30`;
-        ctx.fill();
-      }
+    // 1b. Draw Active Box Drag Preview
+    if (isStudioOpen && zoneToolMode === 'box' && isDragging && boxDragStart && boxDragCurrent) {
+      const minX = Math.min(boxDragStart[0], boxDragCurrent[0]);
+      const maxX = Math.max(boxDragStart[0], boxDragCurrent[0]);
+      const minY = Math.min(boxDragStart[1], boxDragCurrent[1]);
+      const maxY = Math.max(boxDragStart[1], boxDragCurrent[1]);
+
+      const bx1 = toX(minX);
+      const by1 = toY(minY);
+      const bw = (maxX - minX) * rw;
+      const bh = (maxY - minY) * rh;
+
+      ctx.fillStyle = hexToRgba(activeZoneColor, 0.28);
+      ctx.fillRect(bx1, by1, bw, bh);
+
       ctx.lineWidth = 2;
-      ctx.strokeStyle = draftZoneColor;
-      ctx.setLineDash([5, 3]);
-      ctx.stroke();
+      ctx.strokeStyle = activeZoneColor;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(bx1, by1, bw, bh);
       ctx.setLineDash([]);
 
-      // Point handles
-      draftZonePoints.forEach((pt, pIdx) => {
-        const px = toX(pt[0]);
-        const py = toY(pt[1]);
+      // Corner handles
+      [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]].forEach(([cx, cy]) => {
         ctx.beginPath();
-        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.arc(toX(cx), toY(cy), 5, 0, Math.PI * 2);
         ctx.fillStyle = '#ffffff';
         ctx.fill();
         ctx.lineWidth = 2;
-        ctx.strokeStyle = draftZoneColor;
+        ctx.strokeStyle = activeZoneColor;
+        ctx.stroke();
+      });
+
+      // Dimensions Pill
+      const dimText = `${Math.round((maxX - minX) * 100)}% × ${Math.round((maxY - minY) * 100)}%`;
+      ctx.font = '600 10px Inter, monospace';
+      const dimW = ctx.measureText(dimText).width;
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+      ctx.fillRect(bx1 + bw / 2 - dimW / 2 - 5, by1 + bh / 2 - 9, dimW + 10, 18);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(dimText, bx1 + bw / 2 - dimW / 2, by1 + bh / 2 + 4);
+    }
+
+    // 1c. Draw Active Polygon in Progress
+    if (isStudioOpen && zoneToolMode === 'polygon' && draftPolygonPoints.length > 0) {
+      ctx.beginPath();
+      ctx.moveTo(toX(draftPolygonPoints[0][0]), toY(draftPolygonPoints[0][1]));
+      for (let i = 1; i < draftPolygonPoints.length; i++) {
+        ctx.lineTo(toX(draftPolygonPoints[i][0]), toY(draftPolygonPoints[i][1]));
+      }
+
+      // Live rubberband line to current mouse position!
+      if (mouseNormPos) {
+        ctx.lineTo(toX(mouseNormPos[0]), toY(mouseNormPos[1]));
+        // Preview fill if >= 2 points
+        if (draftPolygonPoints.length >= 2) {
+          ctx.lineTo(toX(draftPolygonPoints[0][0]), toY(draftPolygonPoints[0][1]));
+          ctx.fillStyle = hexToRgba(activeZoneColor, 0.20);
+          ctx.fill();
+        }
+      }
+
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = activeZoneColor;
+      ctx.setLineDash([5, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Numbered Point handles
+      draftPolygonPoints.forEach((pt, pIdx) => {
+        const px = toX(pt[0]);
+        const py = toY(pt[1]);
+        const isStart = pIdx === 0;
+
+        ctx.beginPath();
+        ctx.arc(px, py, isStart && isSnappingToStart ? 8 : 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = isStart && isSnappingToStart ? '#10b981' : activeZoneColor;
         ctx.stroke();
 
-        ctx.font = '700 9px Inter, sans-serif';
-        ctx.fillStyle = draftZoneColor;
-        ctx.fillText(`${pIdx + 1}`, px + 7, py - 4);
+        if (isStart && isSnappingToStart) {
+          // Snap pulse ring
+          ctx.beginPath();
+          ctx.arc(px, py, 13, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(16, 185, 129, 0.6)';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+
+          ctx.font = '600 10px Inter, sans-serif';
+          ctx.fillStyle = '#10b981';
+          ctx.fillText('Click to close', px + 12, py - 6);
+        } else {
+          ctx.font = '700 9px Inter, sans-serif';
+          ctx.fillStyle = activeZoneColor;
+          ctx.fillText(`${pIdx + 1}`, px + 7, py - 4);
+        }
       });
+    }
+
+    // 1d. Hairline CAD Crosshair Guide
+    if (isStudioOpen && mouseNormPos && (zoneToolMode === 'box' || zoneToolMode === 'polygon')) {
+      const mx = toX(mouseNormPos[0]);
+      const my = toY(mouseNormPos[1]);
+
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+      ctx.setLineDash([3, 3]);
+
+      // Vertical guide
+      ctx.beginPath();
+      ctx.moveTo(mx, oy);
+      ctx.lineTo(mx, oy + rh);
+      ctx.stroke();
+
+      // Horizontal guide
+      ctx.beginPath();
+      ctx.moveTo(ox, my);
+      ctx.lineTo(ox + rw, my);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     // 2. Draw Object Detections
@@ -582,7 +819,27 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
       });
     }
-  }, [showZones, showDetections, zones, showTrails, selectedTrackId, getDetectionsAtTime, isDrawingZone, draftZonePoints, draftZoneColor]);
+  }, [
+    showZones,
+    showDetections,
+    zones,
+    showTrails,
+    selectedTrackId,
+    getDetectionsAtTime,
+    isStudioOpen,
+    zoneToolMode,
+    selectedZoneIdx,
+    hoveredZoneIdx,
+    hoveredVertex,
+    isDragging,
+    boxDragStart,
+    boxDragCurrent,
+    activeDragVertex,
+    draftPolygonPoints,
+    mouseNormPos,
+    isSnappingToStart,
+    activeZoneColor
+  ]);
 
   // RequestAnimationFrame loop for seamless 60 FPS playback
   useEffect(() => {
@@ -610,9 +867,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     };
   }, [isPlaying, displayTime, renderFrameToCanvas]);
 
-  // Canvas click detection for object selection & zone point marking
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!videoRef.current) return;
+  // Normalized coordinate resolver
+  const getCoords = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!videoRef.current) return null;
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
@@ -637,14 +894,332 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       oy = (ch - rh) / 2;
     }
 
-    // Zone marking mode: record polygon vertex
-    if (isDrawingZone) {
-      const nx = Math.max(0, Math.min(1, (clickX - ox) / rw));
-      const ny = Math.max(0, Math.min(1, (clickY - oy) / rh));
-      setDraftZonePoints((prev) => [...prev, [parseFloat(nx.toFixed(4)), parseFloat(ny.toFixed(4))]]);
+    const nx = Math.max(0, Math.min(1, (clickX - ox) / rw));
+    const ny = Math.max(0, Math.min(1, (clickY - oy) / rh));
+
+    return {
+      nx: parseFloat(nx.toFixed(4)),
+      ny: parseFloat(ny.toFixed(4)),
+      canvasX: clickX,
+      canvasY: clickY,
+      rw,
+      rh,
+      ox,
+      oy
+    };
+  }, []);
+
+  // Backend Sync
+  const saveZonesToBackend = useCallback(async (newZones: ZoneItem[]) => {
+    setIsSavingZones(true);
+    try {
+      const res = await fetch(`/api/videos/${videoId}/zones`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newZones)
+      });
+      if (res.ok) {
+        if (onZonesUpdated) onZonesUpdated(newZones);
+        setZoneToast('✓ Zones synced & timeline updated');
+        setTimeout(() => setZoneToast(null), 3000);
+      }
+    } catch (err) {
+      console.error('Failed to save zones:', err);
+      setZoneToast('⚠ Failed to sync zones');
+      setTimeout(() => setZoneToast(null), 3000);
+    } finally {
+      setIsSavingZones(false);
+    }
+  }, [videoId, onZonesUpdated]);
+
+  // Zone Studio Control
+  const openZoneStudio = () => {
+    if (videoRef.current && isPlaying) {
+      videoRef.current.pause();
+      setIsPlaying(false);
+    }
+    setIsStudioOpen(true);
+    setShowZones(true);
+    setShowZonesPanel(false);
+    setZoneToolMode('box');
+    setSelectedZoneIdx(null);
+    setDraftPolygonPoints([]);
+    setActiveZoneName(`Zone ${zones.length + 1}`);
+  };
+
+  const closeZoneStudio = () => {
+    setIsStudioOpen(false);
+    setSelectedZoneIdx(null);
+    setDraftPolygonPoints([]);
+    setBoxDragStart(null);
+    setBoxDragCurrent(null);
+    setIsDragging(false);
+    setShowTemplatesMenu(false);
+  };
+
+  const toggleZoneStudio = () => {
+    if (isStudioOpen) closeZoneStudio();
+    else openZoneStudio();
+  };
+
+  const handleUndoPolygonPoint = () => {
+    setDraftPolygonPoints((prev) => prev.slice(0, -1));
+  };
+
+  const handleFinishPolygon = () => {
+    if (draftPolygonPoints.length < 3) return;
+    const newName = activeZoneName.trim() || `Zone ${zones.length + 1}`;
+    const newZone: ZoneItem = {
+      name: newName,
+      zone_type: activeZoneType,
+      color: activeZoneColor,
+      polygon: draftPolygonPoints
+    };
+    const updated = [...zones, newZone];
+    saveZonesToBackend(updated);
+    setDraftPolygonPoints([]);
+    setIsSnappingToStart(false);
+    setSelectedZoneIdx(updated.length - 1);
+    setZoneToolMode('select');
+    setZoneToast(`✓ Created polygon ${newName}!`);
+  };
+
+  const handleDeleteSelectedZone = () => {
+    if (selectedZoneIdx === null) return;
+    const updated = zones.filter((_, idx) => idx !== selectedZoneIdx);
+    saveZonesToBackend(updated);
+    setSelectedZoneIdx(null);
+    setZoneToast('✓ Zone deleted');
+  };
+
+  const handleDuplicateSelectedZone = () => {
+    if (selectedZoneIdx === null || !zones[selectedZoneIdx]) return;
+    const orig = zones[selectedZoneIdx];
+    const duplicated: ZoneItem = {
+      name: `${orig.name} (Copy)`,
+      zone_type: orig.zone_type,
+      color: orig.color,
+      polygon: orig.polygon.map(([x, y]) => [
+        Math.min(0.98, x + 0.04),
+        Math.min(0.98, y + 0.04)
+      ]) as [number, number][]
+    };
+    const updated = [...zones, duplicated];
+    saveZonesToBackend(updated);
+    setSelectedZoneIdx(updated.length - 1);
+    setZoneToast(`✓ Duplicated ${orig.name}`);
+  };
+
+  const handleApplyTemplate = (tmpl: ZoneTemplate) => {
+    const newZone: ZoneItem = {
+      name: tmpl.name,
+      zone_type: tmpl.zone_type,
+      color: tmpl.color,
+      polygon: tmpl.polygon.map((pt) => [...pt] as [number, number])
+    };
+    const updated = [...zones, newZone];
+    saveZonesToBackend(updated);
+    setSelectedZoneIdx(updated.length - 1);
+    setActiveZoneName(tmpl.name);
+    setActiveZoneType(tmpl.zone_type);
+    setActiveZoneColor(tmpl.color);
+    setZoneToolMode('select');
+    setShowTemplatesMenu(false);
+    setZoneToast(`✓ Added '${tmpl.name}'! Drag handles to fit view`);
+  };
+
+  // Canvas Mouse Down
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isStudioOpen) return;
+    const c = getCoords(e);
+    if (!c) return;
+
+    if (zoneToolMode === 'box') {
+      setBoxDragStart([c.nx, c.ny]);
+      setBoxDragCurrent([c.nx, c.ny]);
+      setIsDragging(true);
       return;
     }
 
+    if (zoneToolMode === 'select') {
+      // 1. Check if clicking on vertex handle of selected zone
+      if (selectedZoneIdx !== null && zones[selectedZoneIdx]) {
+        const vIdx = findNearVertex(c.canvasX, c.canvasY, zones[selectedZoneIdx].polygon, c.ox, c.oy, c.rw, c.rh, 14);
+        if (vIdx !== null) {
+          setActiveDragVertex({ zoneIdx: selectedZoneIdx, vertexIdx: vIdx });
+          setIsDragging(true);
+          return;
+        }
+      }
+
+      // 2. Check if clicking inside any zone
+      let hitIdx: number | null = null;
+      for (let i = zones.length - 1; i >= 0; i--) {
+        if (pointInPolygon(c.nx, c.ny, zones[i].polygon)) {
+          hitIdx = i;
+          break;
+        }
+      }
+
+      if (hitIdx !== null) {
+        setSelectedZoneIdx(hitIdx);
+        setActiveZoneName(zones[hitIdx].name);
+        setActiveZoneType(zones[hitIdx].zone_type);
+        setActiveZoneColor(zones[hitIdx].color || '#3b82f6');
+        setActiveDragZone({
+          zoneIdx: hitIdx,
+          startNorm: [c.nx, c.ny],
+          originalPolygon: zones[hitIdx].polygon.map((pt) => [...pt] as [number, number])
+        });
+        setIsDragging(true);
+      } else {
+        setSelectedZoneIdx(null);
+      }
+    }
+  };
+
+  // Canvas Mouse Move
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const c = getCoords(e);
+    if (!c) return;
+    setMouseNormPos([c.nx, c.ny]);
+
+    if (!isStudioOpen) return;
+
+    if (zoneToolMode === 'box' && isDragging && boxDragStart) {
+      setBoxDragCurrent([c.nx, c.ny]);
+      return;
+    }
+
+    if (zoneToolMode === 'polygon') {
+      if (draftPolygonPoints.length >= 3) {
+        const p0 = draftPolygonPoints[0];
+        const sx = c.ox + p0[0] * c.rw;
+        const sy = c.oy + p0[1] * c.rh;
+        const dist = Math.hypot(c.canvasX - sx, c.canvasY - sy);
+        setIsSnappingToStart(dist <= 30);
+      } else {
+        setIsSnappingToStart(false);
+      }
+      return;
+    }
+
+    if (zoneToolMode === 'select') {
+      if (isDragging && activeDragVertex && zones[activeDragVertex.zoneIdx]) {
+        const updated = [...zones];
+        const poly = [...updated[activeDragVertex.zoneIdx].polygon];
+        poly[activeDragVertex.vertexIdx] = [c.nx, c.ny];
+        updated[activeDragVertex.zoneIdx] = { ...updated[activeDragVertex.zoneIdx], polygon: poly };
+        if (onZonesUpdated) onZonesUpdated(updated);
+        return;
+      }
+
+      if (isDragging && activeDragZone && zones[activeDragZone.zoneIdx]) {
+        const dx = c.nx - activeDragZone.startNorm[0];
+        const dy = c.ny - activeDragZone.startNorm[1];
+        const updated = [...zones];
+        const movedPoly = activeDragZone.originalPolygon.map(([px, py]) => [
+          parseFloat(Math.max(0, Math.min(1, px + dx)).toFixed(4)),
+          parseFloat(Math.max(0, Math.min(1, py + dy)).toFixed(4))
+        ]) as [number, number][];
+        updated[activeDragZone.zoneIdx] = { ...updated[activeDragZone.zoneIdx], polygon: movedPoly };
+        if (onZonesUpdated) onZonesUpdated(updated);
+        return;
+      }
+
+      // Check hover on vertex
+      if (selectedZoneIdx !== null && zones[selectedZoneIdx]) {
+        const vIdx = findNearVertex(c.canvasX, c.canvasY, zones[selectedZoneIdx].polygon, c.ox, c.oy, c.rw, c.rh, 14);
+        if (vIdx !== null) {
+          setHoveredVertex({ zoneIdx: selectedZoneIdx, vertexIdx: vIdx });
+          setHoveredZoneIdx(null);
+          return;
+        }
+      }
+      setHoveredVertex(null);
+
+      // Check hover on zone body
+      let hIdx: number | null = null;
+      for (let i = zones.length - 1; i >= 0; i--) {
+        if (pointInPolygon(c.nx, c.ny, zones[i].polygon)) {
+          hIdx = i;
+          break;
+        }
+      }
+      setHoveredZoneIdx(hIdx);
+    }
+  };
+
+  // Canvas Mouse Up
+  const handleCanvasMouseUp = () => {
+    if (!isStudioOpen || !isDragging) return;
+
+    if (zoneToolMode === 'box' && boxDragStart && boxDragCurrent) {
+      const minX = Math.min(boxDragStart[0], boxDragCurrent[0]);
+      const maxX = Math.max(boxDragStart[0], boxDragCurrent[0]);
+      const minY = Math.min(boxDragStart[1], boxDragCurrent[1]);
+      const maxY = Math.max(boxDragStart[1], boxDragCurrent[1]);
+
+      if (maxX - minX > 0.01 && maxY - minY > 0.01) {
+        const newName = `Zone ${zones.length + 1}`;
+        const newZone: ZoneItem = {
+          name: newName,
+          zone_type: activeZoneType,
+          color: activeZoneColor,
+          polygon: [
+            [minX, minY],
+            [maxX, minY],
+            [maxX, maxY],
+            [minX, maxY]
+          ]
+        };
+        const updated = [...zones, newZone];
+        saveZonesToBackend(updated);
+        setSelectedZoneIdx(updated.length - 1);
+        setActiveZoneName(newName);
+        setZoneToolMode('select');
+        setZoneToast(`✓ Created ${newName}! Adjust handles or rename`);
+      }
+      setBoxDragStart(null);
+      setBoxDragCurrent(null);
+      setIsDragging(false);
+      return;
+    }
+
+    if (activeDragVertex) {
+      saveZonesToBackend(zones);
+      setActiveDragVertex(null);
+      setIsDragging(false);
+      return;
+    }
+
+    if (activeDragZone) {
+      saveZonesToBackend(zones);
+      setActiveDragZone(null);
+      setIsDragging(false);
+      return;
+    }
+
+    setIsDragging(false);
+  };
+
+  // Canvas Click
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const c = getCoords(e);
+    if (!c) return;
+
+    if (isStudioOpen) {
+      if (zoneToolMode === 'polygon') {
+        if (isSnappingToStart && draftPolygonPoints.length >= 3) {
+          handleFinishPolygon();
+        } else {
+          setDraftPolygonPoints((prev) => [...prev, [c.nx, c.ny]]);
+        }
+      }
+      return;
+    }
+
+    // Normal Object Selection Mode
     if (currentDetections.length === 0) {
       setInspectedTrack(null);
       if (onSelectTrack) onSelectTrack(null);
@@ -653,11 +1228,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     const clicked = currentDetections.find((d) => {
       const [nx1, ny1, nx2, ny2] = d.bbox_norm || [0, 0, 0, 0];
-      const bx = ox + nx1 * rw;
-      const by = oy + ny1 * rh;
-      const bw = (nx2 - nx1) * rw;
-      const bh = (ny2 - ny1) * rh;
-      return clickX >= bx && clickX <= bx + bw && clickY >= by && clickY <= by + bh;
+      const bx = c.ox + nx1 * c.rw;
+      const by = c.oy + ny1 * c.rh;
+      const bw = (nx2 - nx1) * c.rw;
+      const bh = (ny2 - ny1) * c.rh;
+      return c.canvasX >= bx && c.canvasX <= bx + bw && c.canvasY >= by && c.canvasY <= by + bh;
     });
 
     if (clicked) {
@@ -669,48 +1244,32 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
-  // Complete and save custom marked zone
-  const finishDraftZone = async () => {
-    if (draftZonePoints.length < 3) return;
-    const newZone: ZoneItem = {
-      name: draftZoneName.trim() || `Zone ${zones.length + 1}`,
-      zone_type: draftZoneType,
-      color: draftZoneColor,
-      polygon: draftZonePoints
-    };
-
-    const updatedZones = [...zones, newZone];
-    try {
-      const res = await fetch(`/api/videos/${videoId}/zones`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedZones)
-      });
-      if (res.ok) {
-        if (onZonesUpdated) onZonesUpdated(updatedZones);
-      }
-    } catch (err) {
-      console.error('Failed to save custom zone:', err);
+  // Canvas Double Click
+  const handleCanvasDoubleClick = () => {
+    if (isStudioOpen && zoneToolMode === 'polygon' && draftPolygonPoints.length >= 3) {
+      handleFinishPolygon();
     }
-    setIsDrawingZone(false);
-    setDraftZonePoints([]);
-    setShowZones(true);
   };
 
-  // Delete an existing zone
+  // Canvas Mouse Leave
+  const handleCanvasMouseLeave = () => {
+    setMouseNormPos(null);
+    setIsSnappingToStart(false);
+    setHoveredVertex(null);
+    setHoveredZoneIdx(null);
+    if (isDragging) {
+      handleCanvasMouseUp();
+    }
+  };
+
+  // Delete an existing zone by index
   const handleDeleteZone = async (indexToDelete: number) => {
     const updatedZones = zones.filter((_, idx) => idx !== indexToDelete);
-    try {
-      const res = await fetch(`/api/videos/${videoId}/zones`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedZones)
-      });
-      if (res.ok) {
-        if (onZonesUpdated) onZonesUpdated(updatedZones);
-      }
-    } catch (err) {
-      console.error('Failed to delete zone:', err);
+    await saveZonesToBackend(updatedZones);
+    if (selectedZoneIdx === indexToDelete) {
+      setSelectedZoneIdx(null);
+    } else if (selectedZoneIdx !== null && selectedZoneIdx > indexToDelete) {
+      setSelectedZoneIdx(selectedZoneIdx - 1);
     }
   };
 
@@ -736,6 +1295,114 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       setIsDetectingZones(false);
     }
   };
+
+  // Unified Keyboard Controls (Player & Zone Studio)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeTag = (document.activeElement?.tagName || '').toLowerCase();
+      if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
+
+      // Studio-specific shortcuts
+      if (isStudioOpen) {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+          e.preventDefault();
+          handleUndoPolygonPoint();
+          return;
+        }
+        if (e.key === 'Backspace') {
+          if (zoneToolMode === 'polygon' && draftPolygonPoints.length > 0) {
+            e.preventDefault();
+            handleUndoPolygonPoint();
+            return;
+          }
+          if (zoneToolMode === 'select' && selectedZoneIdx !== null) {
+            e.preventDefault();
+            handleDeleteSelectedZone();
+            return;
+          }
+        }
+        if (e.key === 'Delete' && selectedZoneIdx !== null) {
+          e.preventDefault();
+          handleDeleteSelectedZone();
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          if (zoneToolMode === 'polygon' && draftPolygonPoints.length > 0) {
+            setDraftPolygonPoints([]);
+          } else if (selectedZoneIdx !== null) {
+            setSelectedZoneIdx(null);
+          } else {
+            closeZoneStudio();
+          }
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (zoneToolMode === 'polygon' && draftPolygonPoints.length >= 3) {
+            handleFinishPolygon();
+          }
+          return;
+        }
+        if (e.key.toLowerCase() === 'r') {
+          e.preventDefault();
+          setZoneToolMode('box');
+          setSelectedZoneIdx(null);
+          return;
+        }
+        if (e.key.toLowerCase() === 'p') {
+          e.preventDefault();
+          setZoneToolMode('polygon');
+          setSelectedZoneIdx(null);
+          return;
+        }
+        if (e.key.toLowerCase() === 'v') {
+          e.preventDefault();
+          setZoneToolMode('select');
+          return;
+        }
+      }
+
+      // Playback hotkeys
+      if (e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        if (e.shiftKey) stepFrame(-1);
+        else skipSeconds(-5);
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        if (e.shiftKey) stepFrame(1);
+        else skipSeconds(5);
+      } else if (e.code === 'KeyM') {
+        e.preventDefault();
+        toggleMute();
+      } else if (e.code === 'KeyF') {
+        e.preventDefault();
+        toggleFullscreen();
+      } else if (e.code === 'KeyL') {
+        e.preventDefault();
+        setIsLoopingEvidence((prev) => !prev);
+      } else if (e.code === 'KeyB') {
+        e.preventDefault();
+        setShowDetections((prev) => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    isStudioOpen,
+    zoneToolMode,
+    draftPolygonPoints,
+    selectedZoneIdx,
+    togglePlay,
+    skipSeconds,
+    stepFrame,
+    toggleMute,
+    toggleFullscreen
+  ]);
 
   return (
     <div
@@ -784,40 +1451,31 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             Zones
           </button>
 
+          {/* Zone Studio Toggle Button */}
+          <button
+            onClick={toggleZoneStudio}
+            className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center space-x-1.5 border transition-all ${
+              isStudioOpen
+                ? 'bg-amber-600 border-amber-500 text-white shadow-sm'
+                : 'bg-slate-800 border-slate-700 text-amber-400 hover:bg-slate-700 hover:border-slate-600'
+            }`}
+            title="Open Zone Studio to draw and customize zones [Box, Polygon, Presets]"
+          >
+            <PenTool className="w-3.5 h-3.5" />
+            <span>{isStudioOpen ? 'Exit Studio' : `Zone Studio (${zones.length})`}</span>
+          </button>
+
           {/* Zones Management Drawer Button */}
           <button
             onClick={() => setShowZonesPanel(!showZonesPanel)}
-            className={`px-2 py-0.5 rounded text-[11px] font-medium flex items-center space-x-1 border transition-colors ${
+            className={`p-1.5 rounded-md border transition-colors ${
               showZonesPanel
                 ? 'bg-blue-600 border-blue-500 text-white'
-                : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                : 'border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
             }`}
+            title="Manage surveillance zones list"
           >
-            <MapPin className="w-3 h-3" />
-            <span>Zones ({zones.length})</span>
-          </button>
-
-          {/* Direct Mark Zone Button */}
-          <button
-            onClick={() => {
-              const nextState = !isDrawingZone;
-              setIsDrawingZone(nextState);
-              if (nextState) {
-                setDraftZonePoints([]);
-                setDraftZoneName(`Zone ${zones.length + 1}`);
-                setShowZones(true);
-                setShowZonesPanel(false);
-              }
-            }}
-            className={`px-2 py-0.5 rounded text-[11px] font-medium flex items-center space-x-1 border transition-colors ${
-              isDrawingZone
-                ? 'bg-amber-600 border-amber-500 text-white shadow-xs'
-                : 'border-slate-700 text-slate-300 hover:bg-slate-800'
-            }`}
-            title="Mark a custom surveillance zone by clicking points on video"
-          >
-            <PenTool className="w-3 h-3" />
-            <span>{isDrawingZone ? 'Cancel Marking' : 'Mark Zone'}</span>
+            <Layers className="w-3.5 h-3.5" />
           </button>
 
           {/* Filter dropdown */}
@@ -842,6 +1500,209 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       </div>
 
+        {/* Zone Studio CAD Floating Toolbar */}
+        {isStudioOpen && (
+        <div className="bg-slate-900 border-b border-slate-800 px-3.5 py-2 text-xs text-white flex flex-wrap items-center gap-3 select-none w-full">
+            {/* Tool Selection */}
+            <div className="flex items-center bg-slate-800/90 rounded-xl p-0.5 border border-slate-700/60">
+              <button
+                type="button"
+                onClick={() => { setZoneToolMode('box'); setSelectedZoneIdx(null); }}
+                className={`px-2.5 py-1 rounded-lg flex items-center space-x-1.5 transition-all text-xs font-medium ${
+                  zoneToolMode === 'box' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
+                }`}
+                title="Box Tool: Click and drag anywhere to create a box [R]"
+              >
+                <Square className="w-3.5 h-3.5" />
+                <span>Box (Drag)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => { setZoneToolMode('polygon'); setSelectedZoneIdx(null); }}
+                className={`px-2.5 py-1 rounded-lg flex items-center space-x-1.5 transition-all text-xs font-medium ${
+                  zoneToolMode === 'polygon' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
+                }`}
+                title="Polygon Tool: Click vertices to create freeform zone [P]"
+              >
+                <PenTool className="w-3.5 h-3.5" />
+                <span>Polygon</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setZoneToolMode('select')}
+                className={`px-2.5 py-1 rounded-lg flex items-center space-x-1.5 transition-all text-xs font-medium ${
+                  zoneToolMode === 'select' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
+                }`}
+                title="Select & Move: Drag handles or whole zone to tweak [V]"
+              >
+                <MousePointer className="w-3.5 h-3.5" />
+                <span>Select & Move</span>
+              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowTemplatesMenu(!showTemplatesMenu)}
+                  className="px-2 py-1 rounded-lg flex items-center space-x-1 transition-all text-xs font-medium text-amber-400 hover:bg-slate-700/60"
+                  title="1-Click Scene Templates"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Presets ▾</span>
+                </button>
+                {/* Presets Popover Menu */}
+                {showTemplatesMenu && (
+                  <div className="absolute top-full mt-2 left-0 w-64 bg-slate-900/98 border border-slate-700 rounded-xl shadow-2xl p-2 z-40 space-y-1">
+                    <div className="text-[10px] font-semibold text-slate-400 px-2 py-1 uppercase tracking-wider">
+                      Quick Scene Presets
+                    </div>
+                    {ZONE_TEMPLATES.map((tmpl) => (
+                      <button
+                        key={tmpl.id}
+                        type="button"
+                        onClick={() => handleApplyTemplate(tmpl)}
+                        className="w-full text-left p-1.5 rounded-lg hover:bg-slate-800 flex items-center space-x-2 transition-colors group"
+                      >
+                        <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: tmpl.color }} />
+                        <div className="flex flex-col truncate">
+                          <span className="text-xs font-medium text-white group-hover:text-amber-300 truncate">
+                            {tmpl.name}
+                          </span>
+                          <span className="text-[10px] text-slate-400 truncate">
+                            {tmpl.description}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="h-5 w-px bg-slate-700" />
+
+            {/* Active Zone Name & Type */}
+            <div className="flex items-center space-x-2">
+              <input
+                type="text"
+                value={activeZoneName}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setActiveZoneName(val);
+                  if (selectedZoneIdx !== null && zones[selectedZoneIdx]) {
+                    const updated = [...zones];
+                    updated[selectedZoneIdx].name = val;
+                    saveZonesToBackend(updated);
+                  }
+                }}
+                placeholder="Zone name"
+                className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 w-28"
+              />
+              <select
+                value={activeZoneType}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setActiveZoneType(val);
+                  if (selectedZoneIdx !== null && zones[selectedZoneIdx]) {
+                    const updated = [...zones];
+                    updated[selectedZoneIdx].zone_type = val;
+                    saveZonesToBackend(updated);
+                  }
+                }}
+                className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+              >
+                <option value="roadway">Roadway</option>
+                <option value="walkway">Walkway</option>
+                <option value="perimeter">Perimeter</option>
+                <option value="restricted">Restricted</option>
+                <option value="entry_exit">Entry / Gate</option>
+              </select>
+
+              {/* Color Swatches */}
+              <div className="flex items-center space-x-1 pl-1">
+                {['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'].map((col) => (
+                  <button
+                    key={col}
+                    type="button"
+                    onClick={() => {
+                      setActiveZoneColor(col);
+                      if (selectedZoneIdx !== null && zones[selectedZoneIdx]) {
+                        const updated = [...zones];
+                        updated[selectedZoneIdx].color = col;
+                        saveZonesToBackend(updated);
+                      }
+                    }}
+                    className={`w-3.5 h-3.5 rounded-full border transition-all ${
+                      activeZoneColor === col ? 'ring-2 ring-white scale-110' : 'border-transparent hover:scale-105'
+                    }`}
+                    style={{ backgroundColor: col }}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="h-5 w-px bg-slate-700" />
+
+            {/* Mode Actions */}
+            <div className="flex items-center space-x-1.5">
+              {zoneToolMode === 'polygon' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleUndoPolygonPoint}
+                    disabled={draftPolygonPoints.length === 0}
+                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300 text-xs flex items-center space-x-1"
+                    title="Undo last point [Backspace / Ctrl+Z]"
+                  >
+                    <Undo2 className="w-3 h-3" />
+                    <span>Undo ({draftPolygonPoints.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleFinishPolygon}
+                    disabled={draftPolygonPoints.length < 3}
+                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-30 text-white font-medium text-xs flex items-center space-x-1 transition-colors"
+                    title="Close Polygon [Enter]"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Close Shape</span>
+                  </button>
+                </>
+              )}
+
+              {zoneToolMode === 'select' && selectedZoneIdx !== null && (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleDuplicateSelectedZone}
+                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center space-x-1"
+                    title="Duplicate Zone"
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span>Duplicate</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteSelectedZone}
+                    className="px-2 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/30 text-xs flex items-center space-x-1"
+                    title="Delete Zone [Delete]"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Delete</span>
+                  </button>
+                </>
+              )}
+
+              <button
+                type="button"
+                onClick={closeZoneStudio}
+                className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium transition-colors"
+                title="Exit Zone Studio [Esc]"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+
       {/* Video Container */}
       <div className="relative w-full aspect-video bg-black flex items-center justify-center overflow-hidden">
         <video
@@ -861,76 +1722,49 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         {/* Synchronized Canvas */}
         <canvas
           ref={canvasRef}
+          onMouseDown={handleCanvasMouseDown}
+          onMouseMove={handleCanvasMouseMove}
+          onMouseUp={handleCanvasMouseUp}
           onClick={handleCanvasClick}
-          onDoubleClick={() => {
-            if (isDrawingZone && draftZonePoints.length >= 3) {
-              finishDraftZone();
-            }
-          }}
-          className={`absolute inset-0 w-full h-full z-10 ${isDrawingZone ? 'cursor-crosshair' : 'cursor-default'}`}
+          onDoubleClick={handleCanvasDoubleClick}
+          onMouseLeave={handleCanvasMouseLeave}
+          className={`absolute inset-0 w-full h-full z-10 ${
+            !isStudioOpen
+              ? 'cursor-default'
+              : zoneToolMode === 'box'
+              ? 'cursor-crosshair'
+              : zoneToolMode === 'polygon'
+              ? isSnappingToStart
+                ? 'cursor-pointer'
+                : 'cursor-crosshair'
+              : hoveredVertex
+              ? 'cursor-grab'
+              : hoveredZoneIdx !== null
+              ? 'cursor-move'
+              : 'cursor-default'
+          }`}
         />
 
-        {/* Active Zone Marking Floating HUD */}
-        {isDrawingZone && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-slate-900/95 border border-amber-500/80 rounded-xl px-3.5 py-2 text-xs text-white shadow-2xl flex flex-wrap items-center gap-2.5 backdrop-blur-sm max-w-[95%]">
-            <div className="flex items-center gap-1.5 font-medium text-amber-400">
-              <PenTool className="w-3.5 h-3.5" />
-              <span>Click to place points ({draftZonePoints.length})</span>
-            </div>
+        {/* Dynamic Studio Helper Banner */}
+        {isStudioOpen && (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 px-3.5 py-1 rounded-full bg-slate-900/85 border border-slate-700/80 text-[11px] text-slate-300 backdrop-blur-xs flex items-center space-x-2 pointer-events-none shadow-lg">
+            {zoneToolMode === 'box' && (
+              <span>⚡ <strong>Box Mode:</strong> Click and drag anywhere to draw a rectangle zone</span>
+            )}
+            {zoneToolMode === 'polygon' && (
+              <span>📍 <strong>Polygon Mode:</strong> Click points ({draftPolygonPoints.length}) &bull; Double-click or click start point to close &bull; [Backspace] undo</span>
+            )}
+            {zoneToolMode === 'select' && (
+              <span>🖐 <strong>Select Mode:</strong> Click any zone &bull; Drag handles to reshape &bull; Drag body to move</span>
+            )}
+          </div>
+        )}
 
-            <input
-              type="text"
-              value={draftZoneName}
-              onChange={(e) => setDraftZoneName(e.target.value)}
-              placeholder="Zone name"
-              className="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-amber-400 w-28"
-            />
-
-            <select
-              value={draftZoneType}
-              onChange={(e) => setDraftZoneType(e.target.value)}
-              className="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-xs text-slate-200 focus:outline-none focus:border-amber-400"
-            >
-              <option value="roadway">Roadway</option>
-              <option value="walkway">Walkway</option>
-              <option value="perimeter">Perimeter</option>
-              <option value="restricted">Restricted</option>
-            </select>
-
-            <div className="flex items-center gap-1">
-              {['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'].map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setDraftZoneColor(c)}
-                  className={`w-3.5 h-3.5 rounded-full border ${draftZoneColor === c ? 'ring-2 ring-white scale-110' : 'border-transparent'}`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
-
-            <div className="flex items-center gap-1 pl-1.5 border-l border-slate-700">
-              <button
-                type="button"
-                onClick={finishDraftZone}
-                disabled={draftZonePoints.length < 3}
-                className="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:hover:bg-amber-600 text-white font-medium text-xs transition-colors flex items-center gap-1"
-                title={draftZonePoints.length < 3 ? 'Place at least 3 points on video' : 'Save zone'}
-              >
-                <Check className="w-3.5 h-3.5" />
-                <span>Save</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsDrawingZone(false);
-                  setDraftZonePoints([]);
-                }}
-                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
+        {/* Floating Toast Notice */}
+        {zoneToast && (
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 px-3.5 py-1.5 rounded-xl bg-slate-950/95 text-emerald-400 border border-emerald-500/40 shadow-2xl text-xs font-medium backdrop-blur-md animate-in fade-in slide-in-from-top-2 flex items-center space-x-1.5">
+            <Check className="w-3.5 h-3.5" />
+            <span>{zoneToast}</span>
           </div>
         )}
 
@@ -976,7 +1810,24 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 <div className="text-[11px] text-slate-500 italic p-2 text-center">No zones defined yet.</div>
               ) : (
                 zones.map((z, idx) => (
-                  <div key={idx} className="p-2 rounded bg-slate-800/80 border border-slate-700/60 flex items-center justify-between group">
+                  <div
+                    key={idx}
+                    onClick={() => {
+                      setSelectedZoneIdx(idx);
+                      setActiveZoneName(z.name);
+                      setActiveZoneType(z.zone_type);
+                      setActiveZoneColor(z.color || '#3b82f6');
+                      setIsStudioOpen(true);
+                      setZoneToolMode('select');
+                      setShowZonesPanel(false);
+                    }}
+                    className={`p-2 rounded-lg border flex items-center justify-between group cursor-pointer transition-colors ${
+                      selectedZoneIdx === idx
+                        ? 'bg-blue-900/40 border-blue-500/80 ring-1 ring-blue-500/40'
+                        : 'bg-slate-800/80 border-slate-700/60 hover:bg-slate-750'
+                    }`}
+                    title="Click to select and adjust handles in Studio"
+                  >
                     <div className="flex items-center space-x-2 truncate">
                       <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: z.color || '#3b82f6' }} />
                       <div className="flex flex-col truncate">
@@ -985,7 +1836,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                       </div>
                     </div>
                     <button
-                      onClick={() => handleDeleteZone(idx)}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteZone(idx);
+                      }}
                       className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-700/60 transition-colors"
                       title="Delete this zone"
                     >
@@ -998,17 +1853,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
             <div className="flex flex-col space-y-2">
               <button
+                type="button"
                 onClick={() => {
-                  setIsDrawingZone(true);
-                  setDraftZonePoints([]);
-                  setDraftZoneName(`Zone ${zones.length + 1}`);
-                  setShowZones(true);
+                  openZoneStudio();
                   setShowZonesPanel(false);
                 }}
-                className="w-full py-1.5 px-3 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs flex items-center justify-center space-x-1.5 transition-colors shadow-sm"
+                className="w-full py-1.5 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs flex items-center justify-center space-x-1.5 transition-colors shadow-sm"
               >
-                <Plus className="w-3.5 h-3.5" />
-                <span>+ Draw / Mark Custom Zone</span>
+                <PenTool className="w-3.5 h-3.5" />
+                <span>Open Zone Studio (Draw / Edit)</span>
               </button>
 
               <button

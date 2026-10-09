@@ -150,27 +150,52 @@ def get_video_detections(video_id: str):
 @app.get("/api/videos/{video_id}/zones")
 def get_video_zones(video_id: str):
     zones = get_zones(video_id)
-    if not zones:
-        zones = get_default_zones()
     return zones
+
+def _sync_zones_and_events(video_id: str, zones: List[Dict[str, Any]]):
+    save_zones(video_id, zones)
+    dets = get_frame_detections(video_id)
+    if dets:
+        frames = defaultdict(list)
+        for d in dets:
+            frames[d["timestamp"]].append(d)
+        event_engine = EventEngine(zones=zones)
+        for ts in sorted(frames.keys()):
+            event_engine.process_frame_detections(frames[ts], ts)
+        vid = get_video(video_id)
+        duration = vid.get("duration", max(frames.keys(), default=10.0)) if vid else max(frames.keys(), default=10.0)
+        events, tracks = event_engine.finalize(duration)
+        save_events(video_id, events)
+        save_tracks(video_id, tracks)
+        save_frame_detections(video_id, dets)
+        return events, tracks
+    return None, None
 
 @app.post("/api/videos/{video_id}/zones")
 def update_video_zones(video_id: str, zones: List[Dict[str, Any]]):
-    save_zones(video_id, zones)
-    return {"status": "success", "video_id": video_id, "zones": zones}
+    events, tracks = _sync_zones_and_events(video_id, zones)
+    resp: Dict[str, Any] = {"status": "success", "video_id": video_id, "zones": zones}
+    if events is not None:
+        resp["events"] = events
+        resp["tracks"] = tracks
+    return resp
 
 @app.post("/api/videos/{video_id}/zones/autodetect")
 def autodetect_video_zones(video_id: str):
     dets = get_frame_detections(video_id)
     new_zones = generate_adaptive_zones(dets)
-    save_zones(video_id, new_zones)
-    return {"status": "success", "video_id": video_id, "zones": new_zones}
+    events, tracks = _sync_zones_and_events(video_id, new_zones)
+    resp: Dict[str, Any] = {"status": "success", "video_id": video_id, "zones": new_zones}
+    if events is not None:
+        resp["events"] = events
+        resp["tracks"] = tracks
+    return resp
 
 @app.get("/api/videos/{video_id}/timeline")
 def get_timeline(video_id: str):
     events = get_events(video_id)
     tracks = get_tracks(video_id)
-    zones = get_zones(video_id) or get_default_zones()
+    zones = get_zones(video_id)
     return {
         "video_id": video_id,
         "events": events,

@@ -253,12 +253,21 @@ export const App: React.FC = () => {
                   selectedTrackId={selectedTrackId}
                   onSelectTrack={(trId) => setSelectedTrackId(trId)}
                   zones={timeline?.zones || []}
-                  onZonesUpdated={(newZones) => {
+                  onZonesUpdated={async (newZones) => {
                     if (timeline) {
                       setTimeline({
                         ...timeline,
                         zones: newZones
                       });
+                    }
+                    if (selectedVideoId) {
+                      try {
+                        await loadVideoTimeline(selectedVideoId);
+                        await loadVideoDetections(selectedVideoId);
+                        await loadPresetQuestions(selectedVideoId);
+                      } catch (e) {
+                        console.error('Error reloading after zone update', e);
+                      }
                     }
                   }}
                   detections={detections}

@@ -5,7 +5,7 @@ from zone_geometry import MultiZoneTracker, get_default_zones
 
 class EventEngine:
     def __init__(self, zones: Optional[List[Dict[str, Any]]] = None):
-        self.zones = zones or get_default_zones()
+        self.zones = zones if zones is not None else []
         self.zone_tracker = MultiZoneTracker(self.zones)
         # Track histories: track_id -> list of detection records
         self.track_histories: Dict[int, List[Dict[str, Any]]] = {}

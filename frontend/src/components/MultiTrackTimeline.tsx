@@ -61,7 +61,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
       </div>
 
       {/* Timeline Ruler Header */}
-      <div className="relative h-5 border-b border-slate-200 flex items-center ml-36 text-[10px] font-mono text-slate-400">
+      <div className="relative h-5 border-b border-slate-200 flex items-center ml-44 text-[10px] font-mono text-slate-400">
         {[0, 10, 20, 30, 40, 50, 60, 90, 120].map((tick) => {
           if (tick > effectiveDuration) return null;
           const posPercent = (tick / effectiveDuration) * 100;
@@ -84,7 +84,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
         <div
           className="absolute top-0 bottom-0 w-0.5 bg-slate-900 z-20 pointer-events-none"
           style={{
-            left: `calc(9rem + ${(currentTime / effectiveDuration) * 100} * (100% - 9rem) / 100)`
+            left: `calc(11rem + ${(currentTime / effectiveDuration) * 100} * (100% - 11rem) / 100)`
           }}
         >
           <div className="w-2 h-2 bg-slate-900 rotate-45 transform -translate-x-[3px] -translate-y-1" />
@@ -95,8 +95,8 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
           <div
             className="absolute top-0 bottom-0 bg-blue-100/60 border-x border-blue-300 pointer-events-none z-10"
             style={{
-              left: `calc(9rem + ${(evidenceRange.start / effectiveDuration) * 100} * (100% - 9rem) / 100)`,
-              width: `calc(${((evidenceRange.end - evidenceRange.start) / effectiveDuration) * 100} * (100% - 9rem) / 100)`
+              left: `calc(11rem + ${(evidenceRange.start / effectiveDuration) * 100} * (100% - 11rem) / 100)`,
+              width: `calc(${((evidenceRange.end - evidenceRange.start) / effectiveDuration) * 100} * (100% - 11rem) / 100)`
             }}
           />
         )}
@@ -121,9 +121,14 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                   isRowSelected ? 'bg-amber-50 ring-1 ring-amber-300' : 'hover:bg-slate-50'
                 }`}
               >
-                {/* Track Label */}
-                <div className="w-36 pr-2 text-xs text-slate-700 font-medium truncate flex-shrink-0">
-                  {row.label}
+                {/* Track Label with Zone badge */}
+                <div className="w-44 pr-2 text-xs text-slate-700 font-medium truncate flex-shrink-0 flex items-center justify-between">
+                  <span className="truncate">{row.label}</span>
+                  {row.trackItem?.primary_zone && (
+                    <span className="text-[9px] px-1 py-0.2 rounded bg-blue-50 text-blue-600 border border-blue-200 truncate ml-1 font-mono max-w-[80px]" title={`Zone: ${row.trackItem.primary_zone}`}>
+                      {row.trackItem.primary_zone}
+                    </span>
+                  )}
                 </div>
 
                 {/* Track Bar Channel */}
